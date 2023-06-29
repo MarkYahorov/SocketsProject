@@ -18,6 +18,9 @@ import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -32,8 +35,13 @@ class MainActivity : AppCompatActivity() {
 
     private val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
     private val decrCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+    private val simmetrycCipher = Cipher.getInstance("AES")
+    private val simmetrycDecodeCipher = Cipher.getInstance("AES")
     private val generator = KeyPairGenerator.getInstance("RSA")
         .apply { initialize(2048) }
+    private val simmetrycGenerator = KeyGenerator.getInstance("AES").apply {
+        init(256)
+    }
     private lateinit var scope: CoroutineScope
     private lateinit var inputStream: BufferedReader
     private lateinit var out: BufferedWriter
@@ -53,8 +61,9 @@ class MainActivity : AppCompatActivity() {
                     Store.myPublicKey = pair.public
                     Store.myPrivateKey = pair.private
                     Store.myPublicEncoded = Store.myPublicKey.encoded
+                    decrCipher.init(Cipher.DECRYPT_MODE, Store.myPrivateKey)
                     Log.e("TAG23", Store.myPublicEncoded.toString())
-                   out = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
+                    out = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
                     out.write(
                         "${
                             Base64.encode(Store.myPublicEncoded, Base64.DEFAULT).decodeToString()
@@ -63,12 +72,12 @@ class MainActivity : AppCompatActivity() {
                     )
                     out.flush()
                     inputStream = BufferedReader(InputStreamReader(socket.getInputStream()))
-                    Store.serverKey = inputStream.readLine().replace("\r", "")
+                    val text = inputStream.readLine().replace("\r", "")
+                    Store.serverKey = text
                     Log.e("TAG23", "serverKey = ${Store.serverKey}")
                     val serverKey = getServerPublicKey()
                     Log.e("TAG23", "normal server key = ${serverKey}")
                     cipher.init(Cipher.ENCRYPT_MODE, serverKey)
-                    decrCipher.init(Cipher.DECRYPT_MODE, Store.myPrivateKey)
                 } catch (e: Exception) {
                     Log.e("TAG23", "not error ${e.message}")
                 }
@@ -89,15 +98,22 @@ class MainActivity : AppCompatActivity() {
                     val bytes = input.text.toString().toByteArray()
                     try {
                         val sendText = input.text.toString()
-                        val sendEncryptText =
-                            Base64.encode(cipher.doFinal(sendText.toByteArray()), Base64.NO_WRAP)
-                        out.write("${sendEncryptText.decodeToString()}\r")
+                        Store.simmetrycMyKey = simmetrycGenerator.generateKey()
+                        simmetrycCipher.init(Cipher.ENCRYPT_MODE, Store.simmetrycMyKey)
+                        val sendEncryptText = Base64.encode(simmetrycCipher.doFinal(sendText.toByteArray()), Base64.NO_WRAP).decodeToString().replace("\n", "")
+                        val encSimm = Base64.encode(cipher.doFinal(Store.simmetrycMyKey.encoded), Base64.NO_PADDING).decodeToString().replace("\n", "")
+                        out.write("SIMMETYC_KEY = ${encSimm}/SIMMETYC_KEY ${sendEncryptText}\r")
                         out.flush()
-                        val serverText = inputStream.readLine()
-                        Log.e("TAG23", serverText)
-                        val text = decrCipher.doFinal(Base64.decode(serverText.toByteArray(), Base64.NO_WRAP)).decodeToString()
+                        val simmetrycKeyString = inputStream.readLine().replace("\r", "")
+                        val firstIndex = simmetrycKeyString.indexOf("SIMMETYC_KEY = ")
+                        val lastIndex = simmetrycKeyString.indexOf("/SIMMETYC_KEY ")
+                        val simmetrycKey = simmetrycKeyString.substring(firstIndex + "SIMMETYC_KEY = ".length, lastIndex)
+                        val decodedSimmetryc = decrCipher.doFinal(Base64.decode(simmetrycKey.toByteArray(), Base64.NO_PADDING))
+                        val serverSimmet = SecretKeySpec(decodedSimmetryc, 0, decodedSimmetryc.size, "AES")
+                        simmetrycDecodeCipher.init(Cipher.DECRYPT_MODE, serverSimmet)
+                        val takedText = simmetrycDecodeCipher.doFinal(Base64.decode(simmetrycKeyString.substring(lastIndex + "/SIMMETYC_KEY ".length, simmetrycKeyString.length), Base64.NO_PADDING)).decodeToString()
                         scope.launch(Dispatchers.Main) {
-                            decr.text = text
+                            decr.text = takedText
                         }
                     } catch (e: Exception) {
                         out.close()
@@ -107,6 +123,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun getSimmetycKey(simmetrycKey: String): SecretKey {
+        val decodedSimmetryc =
+            decrCipher.doFinal(Base64.decode(simmetrycKey.toByteArray(), Base64.NO_PADDING))
+        return SecretKeySpec(decodedSimmetryc, 0, decodedSimmetryc.size, "AES")
     }
 }
 
@@ -121,6 +143,8 @@ object Store {
     lateinit var myPrivateKey: PrivateKey
     lateinit var myPublicKey: PublicKey
     lateinit var serverKey: String
-    lateinit var serverExponent: String
+    lateinit var simmetrycMyKey: SecretKey
     lateinit var myPublicEncoded: ByteArray
+    lateinit var simmetrycKeyEncoded: ByteArray
+    lateinit var simmetrycServerKey: SecretKey
 }
