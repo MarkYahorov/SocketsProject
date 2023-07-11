@@ -1,29 +1,11 @@
 package com.example.socketsproject
 
 import android.os.Bundle
-import android.util.Base64
-import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import java.io.BufferedReader
-import java.io.BufferedWriter
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.Socket
-import java.security.KeyFactory
-import java.security.KeyPairGenerator
-import java.security.PrivateKey
-import java.security.PublicKey
-import java.security.spec.X509EncodedKeySpec
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import androidx.lifecycle.ViewModelProvider
 
 
 class MainActivity : AppCompatActivity() {
@@ -33,57 +15,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var textView: TextView
     private lateinit var decr: TextView
 
-    private val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
-    private val decrCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
-    private val simmetrycCipher = Cipher.getInstance("AES")
-    private val simmetrycDecodeCipher = Cipher.getInstance("AES")
-    private val generator = KeyPairGenerator.getInstance("RSA")
-        .apply { initialize(2048) }
-    private val simmetrycGenerator = KeyGenerator.getInstance("AES").apply {
-        init(256)
-    }
-    private lateinit var scope: CoroutineScope
-    private lateinit var inputStream: BufferedReader
-    private lateinit var out: BufferedWriter
-
-    private lateinit var socket: Socket
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        val vm = ViewModelProvider(this)[SocketsViewModel::class.java]
 
-        scope = CoroutineScope(Dispatchers.Main)
-        scope.launch(Dispatchers.IO) {
-            if (!this@MainActivity::socket.isInitialized) {
-                try {
-                    socket = Socket("192.168.100.9", 33876)
-                    val pair = generator.genKeyPair()
-                    Store.myPublicKey = pair.public
-                    Store.myPrivateKey = pair.private
-                    Store.myPublicEncoded = Store.myPublicKey.encoded
-                    decrCipher.init(Cipher.DECRYPT_MODE, Store.myPrivateKey)
-                    Log.e("TAG23", Store.myPublicEncoded.toString())
-                    out = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
-                    out.write(
-                        "${
-                            Base64.encode(Store.myPublicEncoded, Base64.DEFAULT).decodeToString()
-                                .replace("\n", "")
-                        }\r"
-                    )
-                    out.flush()
-                    inputStream = BufferedReader(InputStreamReader(socket.getInputStream()))
-                    val text = inputStream.readLine().replace("\r", "")
-                    Store.serverKey = text
-                    Log.e("TAG23", "serverKey = ${Store.serverKey}")
-                    val serverKey = getServerPublicKey()
-                    Log.e("TAG23", "normal server key = ${serverKey}")
-                    cipher.init(Cipher.ENCRYPT_MODE, serverKey)
-                } catch (e: Exception) {
-                    Log.e("TAG23", "not error ${e.message}")
-                }
-
-            }
-        }
+        vm.createSocket()
 
 
         sendBtn = findViewById(R.id.send)
@@ -92,59 +30,11 @@ class MainActivity : AppCompatActivity() {
         decr = findViewById(R.id.decrypt_text)
 
         sendBtn.setOnClickListener {
-            scope.launch(Dispatchers.IO) {
-                if (socket.isConnected) {
-                    Log.e("TAG23", "isConnected")
-                    val bytes = input.text.toString().toByteArray()
-                    try {
-                        val sendText = input.text.toString()
-                        Store.simmetrycMyKey = simmetrycGenerator.generateKey()
-                        simmetrycCipher.init(Cipher.ENCRYPT_MODE, Store.simmetrycMyKey)
-                        val sendEncryptText = Base64.encode(simmetrycCipher.doFinal(sendText.toByteArray()), Base64.NO_WRAP).decodeToString().replace("\n", "")
-                        val encSimm = Base64.encode(cipher.doFinal(Store.simmetrycMyKey.encoded), Base64.NO_PADDING).decodeToString().replace("\n", "")
-                        out.write("SIMMETYC_KEY = ${encSimm}/SIMMETYC_KEY ${sendEncryptText}\r")
-                        out.flush()
-                        val simmetrycKeyString = inputStream.readLine().replace("\r", "")
-                        val firstIndex = simmetrycKeyString.indexOf("SIMMETYC_KEY = ")
-                        val lastIndex = simmetrycKeyString.indexOf("/SIMMETYC_KEY ")
-                        val simmetrycKey = simmetrycKeyString.substring(firstIndex + "SIMMETYC_KEY = ".length, lastIndex)
-                        val decodedSimmetryc = decrCipher.doFinal(Base64.decode(simmetrycKey.toByteArray(), Base64.NO_PADDING))
-                        val serverSimmet = SecretKeySpec(decodedSimmetryc, 0, decodedSimmetryc.size, "AES")
-                        simmetrycDecodeCipher.init(Cipher.DECRYPT_MODE, serverSimmet)
-                        val takedText = simmetrycDecodeCipher.doFinal(Base64.decode(simmetrycKeyString.substring(lastIndex + "/SIMMETYC_KEY ".length, simmetrycKeyString.length), Base64.NO_PADDING)).decodeToString()
-                        scope.launch(Dispatchers.Main) {
-                            decr.text = takedText
-                        }
-                    } catch (e: Exception) {
-                        out.close()
-                        inputStream.close()
-                        socket.close()
-                    }
-                }
-            }
+            vm.onSendBtnClicked(input.text.toString())
+        }
+
+        vm.livedata.observe(this){
+            decr.text = it
         }
     }
-
-    private fun getSimmetycKey(simmetrycKey: String): SecretKey {
-        val decodedSimmetryc =
-            decrCipher.doFinal(Base64.decode(simmetrycKey.toByteArray(), Base64.NO_PADDING))
-        return SecretKeySpec(decodedSimmetryc, 0, decodedSimmetryc.size, "AES")
-    }
-}
-
-fun getServerPublicKey(): PublicKey {
-    val publicBytes: ByteArray = Base64.decode(Store.serverKey.toByteArray(), Base64.NO_WRAP)
-    val keySpec = X509EncodedKeySpec(publicBytes)
-    val keyFactory = KeyFactory.getInstance("RSA")
-    return keyFactory.generatePublic(keySpec)
-}
-
-object Store {
-    lateinit var myPrivateKey: PrivateKey
-    lateinit var myPublicKey: PublicKey
-    lateinit var serverKey: String
-    lateinit var simmetrycMyKey: SecretKey
-    lateinit var myPublicEncoded: ByteArray
-    lateinit var simmetrycKeyEncoded: ByteArray
-    lateinit var simmetrycServerKey: SecretKey
 }
